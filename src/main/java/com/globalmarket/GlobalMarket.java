@@ -6,6 +6,9 @@ import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.ChatColor;
+// 独立离线库存系统
+import com.globalmarket.util.SimpleOfflineInventory;
+import com.globalmarket.util.EnhancedRollbackManager;
 
 import java.util.logging.Logger;
 
@@ -13,9 +16,10 @@ public class GlobalMarket extends JavaPlugin {
     
     private static GlobalMarket instance;
     private Logger logger;
-    private MarketManager marketManager;
     private EconomyManager economyManager;
+    private MarketManager marketManager;
     private GUIManager guiManager;
+    private EnhancedRollbackManager enhancedRollbackManager;
     
     @Override
     public void onEnable() {
@@ -35,6 +39,13 @@ public class GlobalMarket extends JavaPlugin {
         // 初始化GUI管理器
         guiManager = new GUIManager(this);
         
+        // 初始化增强回滚管理器
+        enhancedRollbackManager = new EnhancedRollbackManager(this);
+        
+        // 初始化独立离线库存系统
+        SimpleOfflineInventory.getInstance();
+        getLogger().info("已启用独立离线库存系统，无需OpenInv依赖");
+        
         // 注册事件监听器
         getServer().getPluginManager().registerEvents(new MarketListener(this), this);
         getServer().getPluginManager().registerEvents(new GUIListener(this, guiManager), this);
@@ -43,6 +54,11 @@ public class GlobalMarket extends JavaPlugin {
         MarketCommand marketCommand = new MarketCommand(this);
         getCommand("market").setExecutor(marketCommand);
         getCommand("market").setTabCompleter(marketCommand);
+        
+        // 加载邮箱数据
+        if (marketManager != null && marketManager.getMailbox() != null) {
+            marketManager.getMailbox().loadMailboxData();
+        }
         
         logger.info("GlobalMarket 插件已启用!");
         logger.info("作者: GlobalMarket 团队");
@@ -62,16 +78,20 @@ public class GlobalMarket extends JavaPlugin {
         return instance;
     }
     
-    public MarketManager getMarketManager() {
-        return marketManager;
-    }
-    
     public EconomyManager getEconomyManager() {
         return economyManager;
     }
     
-    public GUIManager getGuiManager() {
+    public MarketManager getMarketManager() {
+        return marketManager;
+    }
+    
+    public GUIManager getGUIManager() {
         return guiManager;
+    }
+    
+    public EnhancedRollbackManager getEnhancedRollbackManager() {
+        return enhancedRollbackManager;
     }
     
     public void reloadPlugin() {

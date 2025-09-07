@@ -66,6 +66,7 @@ public class DatabaseStorage {
              PreparedStatement stmt = conn.prepareStatement(selectSQL);
              ResultSet rs = stmt.executeQuery()) {
             
+            int count = 0;
             while (rs.next()) {
                 UUID id = UUID.fromString(rs.getString("id"));
                 UUID sellerUUID = UUID.fromString(rs.getString("seller_uuid"));
@@ -75,7 +76,11 @@ public class DatabaseStorage {
                 
                 MarketListing listing = new MarketListing(id, sellerUUID, item, price, createdAt);
                 listings.put(id, listing);
+                count++;
             }
+            
+            // **关键调试：添加数据库加载的详细日志**
+            plugin.getLogger().info("[数据库操作] 从数据库加载物品数量: " + count);
             
         } catch (SQLException | IOException e) {
             plugin.getLogger().severe("加载市场列表失败: " + e.getMessage());
@@ -97,7 +102,17 @@ public class DatabaseStorage {
              PreparedStatement stmt = conn.prepareStatement(deleteSQL)) {
             
             stmt.setString(1, listingId.toString());
-            stmt.executeUpdate();
+            int affectedRows = stmt.executeUpdate();
+            
+            // **关键调试：添加数据库删除操作的详细日志**
+            plugin.getLogger().info("[数据库操作] 尝试删除物品ID: " + listingId);
+            plugin.getLogger().info("[数据库操作] 影响行数: " + affectedRows);
+            
+            if (affectedRows > 0) {
+                plugin.getLogger().info("[数据库操作] 物品已从数据库成功删除: " + listingId);
+            } else {
+                plugin.getLogger().warning("[数据库操作] 未找到要删除的物品ID: " + listingId);
+            }
             
         } catch (SQLException e) {
             plugin.getLogger().severe("移除市场列表失败: " + e.getMessage());

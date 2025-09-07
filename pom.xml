@@ -7,7 +7,7 @@
 
     <groupId>com.globalmarket</groupId>
     <artifactId>GlobalMarket</artifactId>
-    <version>1.0.0</version>
+    <version>1.1.0</version>
     <packaging>jar</packaging>
 
     <name>GlobalMarket</name>
@@ -58,6 +58,7 @@
             <artifactId>HikariCP</artifactId>
             <version>5.0.1</version>
         </dependency>
+        <!-- 独立离线库存系统，无需OpenInv依赖 -->
     </dependencies>
 
     <build>

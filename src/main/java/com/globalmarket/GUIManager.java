@@ -60,7 +60,7 @@ public class GUIManager {
         
         Inventory gui = Bukkit.createInventory(null, 54, MARKET_GUI_TITLE + " - 第" + (page + 1) + "页");
         
-        // 实时获取最新市场数据并排序
+        // 强制刷新并获取最新市场数据
         Map<UUID, MarketListing> allListings = plugin.getMarketManager().getAllListings();
         List<Map.Entry<UUID, MarketListing>> sortedListings = new ArrayList<>(allListings.entrySet());
         sortedListings.sort((e1, e2) -> currentSort.getComparator().compare(e1.getValue(), e2.getValue()));

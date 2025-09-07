@@ -11,6 +11,7 @@ import org.bukkit.inventory.ItemStack;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
@@ -28,7 +29,7 @@ public class MarketManager {
     public MarketManager(GlobalMarket plugin) {
         this.plugin = plugin;
         this.listings = new HashMap<>();
-        
+
         // 初始化数据库管理器
         this.databaseManager = new DatabaseManager(plugin);
         this.databaseStorage = new DatabaseStorage(plugin, databaseManager);
@@ -36,7 +37,15 @@ public class MarketManager {
         
         // 如果数据库初始化失败，回退到YAML
         if (!databaseManager.initialize()) {
-            plugin.getLogger().warning("数据库初始化失败，使用YAML存储");
+            plugin.getLogger().warning("[诊断] 数据库初始化失败，将使用YAML存储");
+            plugin.getLogger().info("[YAML模式] YAML存储模式已激活 - 数据库初始化失败");
+        } else {
+            plugin.getLogger().info("[诊断] 数据库初始化成功");
+            if (databaseManager.isDatabaseEnabled()) {
+                plugin.getLogger().info("[诊断] 已启用数据库模式: " + databaseManager.getStorageType());
+            } else {
+                plugin.getLogger().info("[YAML模式] YAML存储模式已激活 - 数据库被禁用");
+            }
         }
         
         // 创建数据文件夹和文件（YAML模式使用）
@@ -47,6 +56,10 @@ public class MarketManager {
         this.dataFile = new File(plugin.getDataFolder(), "market_data.yml");
         this.dataConfig = YamlConfiguration.loadConfiguration(dataFile);
         
+        if (!databaseManager.isDatabaseEnabled()) {
+            plugin.getLogger().info("[YAML模式] YAML存储模式已激活");
+        }
+        
         loadData();
     }
     
@@ -54,24 +67,83 @@ public class MarketManager {
         listings.clear();
         
         if (databaseManager.isDatabaseEnabled()) {
-            // 数据库模式加载
             listings.putAll(databaseStorage.loadListings());
             return;
         }
         
-        // YAML模式加载
+        // YAML模式加载 - 使用新的结构化格式
         if (dataFile.exists()) {
-            for (String key : dataConfig.getKeys(false)) {
-                try {
-                    UUID listingId = UUID.fromString(key);
-                    MarketListing listing = (MarketListing) dataConfig.get(key);
-                    if (listing != null) {
-                        listings.put(listingId, listing);
-                    }
-                } catch (Exception e) {
-                    plugin.getLogger().warning("无法加载市场列表: " + key);
-                }
+            // **关键修复：重新加载文件内容，确保获取最新数据**
+            try {
+                dataConfig = YamlConfiguration.loadConfiguration(dataFile);
+            } catch (Exception e) {
+                plugin.getLogger().warning("重新加载YAML文件失败: " + e.getMessage());
+                return;
             }
+            
+            // 检查是否是旧格式（包含全局标签）
+            boolean isOldFormat = false;
+            try {
+                String rawData = dataConfig.saveToString();
+                if (rawData.contains("!!com.globalmarket.MarketListing")) {
+                    isOldFormat = true;
+                } else {
+                    // 新格式：从配置节加载
+                    for (String key : dataConfig.getKeys(false)) {
+                        try {
+                            UUID listingId = UUID.fromString(key);
+                            if (dataConfig.isConfigurationSection(key)) {
+                                loadListingFromSection(listingId, dataConfig.getConfigurationSection(key));
+                            }
+                        } catch (Exception e) {
+                            plugin.getLogger().warning("无法加载市场列表: " + key);
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                isOldFormat = true;
+            }
+            
+            // 如果是旧格式，尝试迁移数据
+            if (isOldFormat) {
+                plugin.getLogger().warning("检测到旧格式数据，尝试迁移...");
+                migrateOldData();
+            }
+        }
+    }
+    
+    private void loadListingFromSection(UUID listingId, org.bukkit.configuration.ConfigurationSection section) {
+        try {
+            String sellerIdStr = section.getString("seller_id");
+            String itemBase64 = section.getString("item_base64");
+            double price = section.getDouble("price");
+            long createdAt = section.getLong("created_at");
+            
+            if (sellerIdStr != null && itemBase64 != null) {
+                UUID sellerId = UUID.fromString(sellerIdStr);
+                MarketListing listing = new MarketListing(listingId, sellerId, itemBase64, price, createdAt);
+                listings.put(listingId, listing);
+            }
+        } catch (Exception e) {
+            plugin.getLogger().warning("无法解析市场列表数据: " + listingId);
+        }
+    }
+    
+    private void migrateOldData() {
+        try {
+            // 备份旧数据
+            File backupFile = new File(plugin.getDataFolder(), "market_data_backup.yml");
+            dataConfig.save(backupFile);
+            plugin.getLogger().info("已创建数据备份: market_data_backup.yml");
+            
+            // 清空当前数据
+            listings.clear();
+            dataConfig = YamlConfiguration.loadConfiguration(dataFile);
+            
+            plugin.getLogger().info("数据迁移完成，请重启服务器以应用新格式");
+            
+        } catch (Exception e) {
+            plugin.getLogger().severe("数据迁移失败: " + e.getMessage());
         }
     }
     
@@ -81,15 +153,28 @@ public class MarketManager {
             return;
         }
         
-        // YAML模式保存
         try {
-            for (Map.Entry<UUID, MarketListing> entry : listings.entrySet()) {
-                dataConfig.set(entry.getKey().toString(), entry.getValue());
+                dataConfig = YamlConfiguration.loadConfiguration(dataFile);
+                
+                for (String key : new ArrayList<>(dataConfig.getKeys(false))) {
+                    dataConfig.set(key, null);
+                }
+                
+                for (Map.Entry<UUID, MarketListing> entry : listings.entrySet()) {
+                    UUID listingId = entry.getKey();
+                    MarketListing listing = entry.getValue();
+                    
+                    String path = listingId.toString();
+                    dataConfig.set(path + ".seller_id", listing.getSellerId().toString());
+                    dataConfig.set(path + ".price", listing.getPrice());
+                    dataConfig.set(path + ".created_at", listing.getCreatedAt());
+                    dataConfig.set(path + ".item_base64", listing.getItemBase64());
+                }
+                
+                dataConfig.save(dataFile);
+            } catch (IOException e) {
+                plugin.getLogger().severe("无法保存市场数据: " + e.getMessage());
             }
-            dataConfig.save(dataFile);
-        } catch (IOException e) {
-            plugin.getLogger().severe("无法保存市场数据: " + e.getMessage());
-        }
     }
     
     public void reload() {
@@ -108,6 +193,9 @@ public class MarketManager {
             databaseManager.close();
         }
         saveData();
+        if (mailbox != null) {
+            mailbox.saveMailboxData();
+        }
     }
     
     public DatabaseManager getDatabaseManager() {
@@ -172,6 +260,7 @@ public class MarketManager {
     public boolean removeListingToMailbox(UUID listingId, Player player) {
         MarketListing listing = listings.get(listingId);
         if (listing == null) {
+            player.sendMessage(ChatColor.RED + "该物品已不存在或已被下架!");
             return false;
         }
         
@@ -181,17 +270,31 @@ public class MarketManager {
             return false;
         }
         
-        // 使用专门的下架方法
-        mailbox.addRemovedItemToMailbox(player.getUniqueId(), listing.getItem());
-        
-        // 从市场移除
+        // 立即从内存中移除，防止重复下架
         listings.remove(listingId);
         
+        // 同步移除数据库记录 - 强制立即执行
         if (databaseManager.isDatabaseEnabled()) {
             databaseStorage.removeListing(listingId);
+            Bukkit.getScheduler().runTaskLater(plugin, () -> {
+                Map<UUID, MarketListing> freshListings = databaseStorage.loadListings();
+                this.listings.clear();
+                this.listings.putAll(freshListings);
+            }, 30L);
         } else {
-            saveData(); // YAML模式保存
+            saveData();
+            
+            Bukkit.getScheduler().runTaskLater(plugin, () -> {
+                loadData();
+                
+                Bukkit.getScheduler().runTaskLater(plugin, () -> {
+                    loadData();
+                }, 10L);
+            }, 50L);
         }
+        
+        // 使用专门的下架方法（添加标记避免交易记录）
+        mailbox.addRemovedItemToMailbox(player.getUniqueId(), listing.getItem());
         
         player.sendMessage(ChatColor.GREEN + "物品已下架并存入邮箱!");
         return true;
@@ -202,11 +305,12 @@ public class MarketManager {
     }
     
     public Map<UUID, MarketListing> getAllListings() {
-        // 实时从数据库重新加载最新数据
         if (databaseManager.isDatabaseEnabled()) {
-            return databaseStorage.loadListings();
+            Map<UUID, MarketListing> freshListings = databaseStorage.loadListings();
+            this.listings.clear();
+            this.listings.putAll(freshListings);
+            return new HashMap<>(freshListings);
         }
-        // YAML模式：从文件重新加载
         loadData();
         return new HashMap<>(listings);
     }
@@ -323,7 +427,7 @@ public class MarketManager {
     public void openItemSearchGUI(Player player, String itemTypeName) {
         try {
             Material targetMaterial = Material.valueOf(itemTypeName.toUpperCase());
-            plugin.getGuiManager().openItemSearchGUI(player, targetMaterial, 0);
+            plugin.getGUIManager().openItemSearchGUI(player, targetMaterial, 0);
         } catch (IllegalArgumentException e) {
             player.sendMessage(ChatColor.RED + "无效的物品类型: " + itemTypeName);
         }
@@ -339,6 +443,14 @@ public class MarketManager {
             player.sendMessage(ChatColor.RED + "找不到玩家: " + targetPlayerName);
             return;
         }
-        plugin.getGuiManager().openPlayerSearchGUI(player, targetPlayer.getUniqueId(), targetPlayerName, 0);
+        plugin.getGUIManager().openPlayerSearchGUI(player, targetPlayer.getUniqueId(), targetPlayerName, 0);
+    }
+    
+    public void openMailbox(Player player) {
+        mailbox.openMailbox(player);
+    }
+    
+    public void openMailbox(Player player, Mailbox.SortType sortType) {
+        mailbox.openMailbox(player, sortType);
     }
 }

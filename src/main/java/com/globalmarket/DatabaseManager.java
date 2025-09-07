@@ -159,7 +159,7 @@ public class DatabaseManager {
     }
     
     public boolean isDatabaseEnabled() {
-        return storageType.equals("mysql") || storageType.equals("postgresql");
+        return storageType != null && storageType.equals("mysql");
     }
     
     public void close() {

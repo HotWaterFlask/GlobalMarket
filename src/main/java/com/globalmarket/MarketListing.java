@@ -21,7 +21,16 @@ public class MarketListing implements Serializable {
     public MarketListing(UUID listingId, UUID sellerId, ItemStack item, double price, long createdAt) {
         this.listingId = listingId;
         this.sellerId = sellerId;
-        this.itemBase64 = itemStackToBase64(item);
+        this.itemBase64 = item != null ? itemStackToBase64(item) : null;
+        this.price = price;
+        this.createdAt = createdAt;
+    }
+    
+    // 用于从存储加载的构造函数
+    public MarketListing(UUID listingId, UUID sellerId, String itemBase64, double price, long createdAt) {
+        this.listingId = listingId;
+        this.sellerId = sellerId;
+        this.itemBase64 = itemBase64;
         this.price = price;
         this.createdAt = createdAt;
     }
@@ -44,6 +53,10 @@ public class MarketListing implements Serializable {
     
     public long getCreatedAt() {
         return createdAt;
+    }
+    
+    public String getItemBase64() {
+        return itemBase64;
     }
     
     private static String itemStackToBase64(ItemStack item) {

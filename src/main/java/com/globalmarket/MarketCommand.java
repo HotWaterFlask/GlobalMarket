@@ -11,6 +11,9 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import com.globalmarket.util.AntiDuplicationManager;
+import com.globalmarket.util.OfflineTransactionManager;
+import com.globalmarket.util.SimpleOfflineInventory;
 
 public class MarketCommand implements TabExecutor {
     
@@ -22,9 +25,21 @@ public class MarketCommand implements TabExecutor {
     
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+        // 处理控制台命令
         if (!(sender instanceof Player)) {
-            sender.sendMessage(ChatColor.RED + "该命令只能由玩家执行!");
-            return true;
+            if (args.length > 0 && "reload".equalsIgnoreCase(args[0])) {
+                if (!sender.hasPermission("globalmarket.reload")) {
+                    sender.sendMessage("你没有权限执行此命令!");
+                    return true;
+                }
+                
+                plugin.reloadPlugin();
+                sender.sendMessage("GlobalMarket 插件已从控制台重新加载!");
+                return true;
+            } else {
+                sender.sendMessage(ChatColor.RED + "该命令只能由玩家执行! (除了 /market reload)");
+                return true;
+            }
         }
         
         Player player = (Player) sender;
@@ -100,6 +115,18 @@ public class MarketCommand implements TabExecutor {
                 sellAmount = heldAmount;
             }
             
+            // 检查最大上架数量限制
+            int maxListings = plugin.getConfig().getInt("max-listings-per-player", 10);
+            if (maxListings > 0) { // -1 表示无限制
+                int currentListings = plugin.getMarketManager().getPlayerListingCount(player.getUniqueId());
+                if (currentListings >= maxListings) {
+                    player.sendMessage(ChatColor.RED + "你已达到最大上架数量限制! " +
+                            "当前: " + currentListings + "/" + maxListings + 
+                            " 请先下架一些物品再上架新物品。");
+                    return;
+                }
+            }
+            
             // 检查上架费用
             double listingFeePercentage = plugin.getConfig().getDouble("listing-fee-percentage", 0.5);
             double listingFee = totalPrice * (listingFeePercentage / 100.0);
@@ -113,44 +140,89 @@ public class MarketCommand implements TabExecutor {
                 }
             }
             
-            // 创建物品副本
-            ItemStack sellItem = item.clone();
-            sellItem.setAmount(sellAmount);
-            
-            // 从玩家手中移除指定数量的物品
-            if (item.getAmount() > sellAmount) {
-                item.setAmount(item.getAmount() - sellAmount);
-            } else {
-                player.getInventory().setItemInMainHand(null);
+            // 预验证阶段：在任何时候都不操作物品，只验证
+            if (!player.isOnline()) {
+                player.sendMessage(ChatColor.RED + "网络连接异常，请重试!");
+                return;
             }
             
-            // 扣除上架费用
+            // 验证物品存在性（只读操作，不修改物品）
+            ItemStack currentItem = player.getInventory().getItemInMainHand();
+            if (currentItem == null || currentItem.getType().isAir() || 
+                !currentItem.isSimilar(item) || currentItem.getAmount() < sellAmount) {
+                player.sendMessage(ChatColor.RED + "物品不足或状态异常!");
+                return;
+            }
+            
+            // 验证费用（只检查，不扣除）
             if (plugin.getEconomyManager().isEnabled() && listingFee > 0) {
-                // 根据配置选择计算方式
-                String calculationMethod = plugin.getConfig().getString("listing-fee-calculation-method", "floor").toLowerCase();
-                switch (calculationMethod) {
-                    case "round":
-                        listingFee = Math.round(listingFee * 100.0) / 100.0;
-                        break;
-                    case "floor":
-                    default:
-                        listingFee = Math.floor(listingFee * 100.0) / 100.0;
-                        break;
+                if (!plugin.getEconomyManager().hasBalance(player, listingFee)) {
+                    player.sendMessage(ChatColor.RED + "你没有足够的金币支付上架费用! " +
+                            "需要: " + plugin.getEconomyManager().formatCurrency(listingFee));
+                    return;
                 }
-                plugin.getEconomyManager().withdraw(player, listingFee);
+            }
+            
+            // 创建物品副本用于上架
+            ItemStack sellItem = currentItem.clone();
+            sellItem.setAmount(sellAmount);
+            
+            // 创建离线交易管理器
+            OfflineTransactionManager offlineTransactionManager = new OfflineTransactionManager(
+                plugin.getEconomyManager(), 
+                SimpleOfflineInventory.getInstance()
+            );
+            
+            // 先扣除物品，再扣除上架费用
+            double totalCost = totalPrice; // 物品总价
+            
+            // 创建反物品复制管理器进行安全验证和扣除物品
+            AntiDuplicationManager antiDupManager = new AntiDuplicationManager(plugin, offlineTransactionManager);
+            AntiDuplicationManager.ValidationResult validationResult = antiDupManager.validateAndDeductItems(
+                player, sellItem, sellAmount, totalCost
+            );
+            
+            if (!validationResult.isSuccess()) {
+                player.sendMessage(ChatColor.RED + validationResult.getMessage());
+                return;
+            }
+            
+            // 记录回滚数据（用于异常恢复）
+            ItemStack[] rollbackItems = {sellItem.clone()};
+            double rollbackMoney = totalCost;
+            
+            // 单独扣除上架费用（如果有）
+            if (listingFee > 0) {
+                if (!plugin.getEconomyManager().withdraw(player, listingFee).transactionSuccess()) {
+                    // 如果扣税费失败，返还物品
+                    ItemStack giveBack = sellItem.clone();
+                    giveBack.setAmount(sellAmount);
+                    player.getInventory().addItem(giveBack);
+                    player.sendMessage(ChatColor.RED + "扣除上架费用失败!");
+                    return;
+                }
+            }
+            
+            // 创建上架记录
+            UUID listingId = plugin.getMarketManager().createListing(player, sellItem, totalPrice);
+            
+            // 4. 成功消息
+            double pricePerItem = totalPrice / sellAmount;
+            String successMessage = plugin.getConfig().getString("messages.create-success", 
+                    "&a物品上架成功! 总价: %total% (%amount% x %count% 个)")
+                    .replace("%total%", plugin.getEconomyManager().formatCurrency(totalPrice))
+                    .replace("%amount%", plugin.getEconomyManager().formatCurrency(pricePerItem))
+                    .replace("%count%", String.valueOf(sellAmount));
+            player.sendMessage(ChatColor.translateAlternateColorCodes('&', successMessage));
+            
+            // 5. 税费提示
+            if (listingFee > 0) {
                 String feeMessage = plugin.getConfig().getString("messages.listing-fee-charged", 
                         "&a已收取上架费用: %fee% (物品价格的 %percentage%%)")
                         .replace("%fee%", plugin.getEconomyManager().formatCurrency(listingFee))
-                        .replace("%percentage%", String.format("%.2f", listingFeePercentage));
+                        .replace("%percentage%", String.valueOf(plugin.getConfig().getDouble("listing-fee-percentage", 0.5)));
                 player.sendMessage(ChatColor.translateAlternateColorCodes('&', feeMessage));
             }
-            
-            UUID listingId = plugin.getMarketManager().createListing(player, sellItem, totalPrice);
-            String successMessage = plugin.getConfig().getString("messages.create-success", 
-                    "&a物品上架成功! %count%个物品，总价: %amount%")
-                    .replace("%amount%", plugin.getEconomyManager().formatCurrency(totalPrice))
-                    .replace("%count%", String.valueOf(sellAmount));
-            player.sendMessage(ChatColor.translateAlternateColorCodes('&', successMessage));
             
         } catch (NumberFormatException e) {
             if (e.getMessage().contains("integer")) {
@@ -164,28 +236,8 @@ public class MarketCommand implements TabExecutor {
 
     
     private void handleListingCommand(Player player) {
-        player.sendMessage(ChatColor.GOLD + "=== 实时市场列表 ===");
-        
-        Map<UUID, MarketListing> currentListings = plugin.getMarketManager().getAllListings();
-        
-        if (currentListings.isEmpty()) {
-            player.sendMessage(ChatColor.GRAY + "市场目前没有物品出售。");
-            return;
-        }
-        
-        player.sendMessage(ChatColor.GRAY + "实时更新中...");
-        
-        currentListings.forEach((id, listing) -> {
-            String itemName = listing.getItem().getType().name();
-            int amount = listing.getItem().getAmount();
-            double totalPrice = listing.getPrice();
-            
-            player.sendMessage(ChatColor.YELLOW + "ID: " + id.toString().substring(0, 8) + 
-                             ChatColor.WHITE + " | " + 
-                             ChatColor.AQUA + itemName + " x" + amount + 
-                             ChatColor.WHITE + " | " + 
-                             ChatColor.GREEN + "总价: $" + totalPrice);
-        });
+        plugin.getGUIManager().openMarketGUI(player, 0);
+        player.sendMessage(ChatColor.GREEN + "已打开市场界面!");
     }
     
 
@@ -209,6 +261,7 @@ public class MarketCommand implements TabExecutor {
         }
         
         plugin.getMarketManager().getMailbox().openMailbox(player);
+        player.sendMessage(ChatColor.GREEN + "已打开邮箱!");
     }
     
     private void handleSendCommand(Player player, String[] args) {

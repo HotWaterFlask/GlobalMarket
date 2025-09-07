@@ -1,7 +1,7 @@
 # GlobalMarket 配置文件
 
-# 最大上架物品数量
-max-listings-per-player: 10
+# 最大上架物品数量 (-1 为无限制)
+max-listings-per-player: -1
 
 # 是否启用经济系统支持 (需要Vault插件)
 use-economy: true
@@ -13,32 +13,37 @@ listing-fee-percentage: 0.5
 # 上架费用计算方式: round (四舍五入) 或 floor (去尾法/向下取整)
 listing-fee-calculation-method: floor
 
-# 物品过期时间 (小时，0为不过期)
-listing-expire-time: 24
+# 反物品复制设置
+anti-duplication:
+  # 启用反复制机制
+  enabled: true
+  # 上架超时时间（毫秒），超过此时间未完成上架则自动取消
+  timeout-milliseconds: 5000
+  # 是否启用玩家在线状态检查
+  online-check: true
+  # 是否启用物品存在性验证
+  item-validation: true
+  # 失败时是否发送详细错误消息
+  detailed-errors: true
+  # 是否启用离线交易管理器
+  use-offline-transaction-manager: true
+  # 最大重试次数
+  max-retries: 3
+  # 重试间隔（毫秒）
+  retry-delay: 1000
 
-# 数据存储类型: yaml, mysql, postgresql
+# 物品过期时间 (小时，0为不过期)
+listing-expire-time: 4320
+
+# 数据存储类型: yaml, mysql
 storage-type: yaml
 
-# 数据库配置 (仅当 storage-type 为 mysql 或 postgresql 时生效)
+# 数据库配置 (仅当 storage-type 为 mysql 时生效)
 database:
   # MySQL配置示例
   mysql:
     host: localhost
     port: 3306
-    database: globalmarket
-    username: minecraft
-    password: password
-    ssl: false
-    # 连接池配置
-    pool-size: 10
-    connection-timeout: 30000
-    idle-timeout: 600000
-    max-lifetime: 1800000
-  
-  # PostgreSQL配置示例
-  postgresql:
-    host: localhost
-    port: 5432
     database: globalmarket
     username: minecraft
     password: password
